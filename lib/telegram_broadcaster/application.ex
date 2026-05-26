@@ -16,14 +16,20 @@ defmodule TelegramBroadcaster.Application do
   end
 
   defp maybe_add_redis(children) do
-    if Mix.env() == :test do
-      # In test mode, use TestRedis (Agent-based mock)
-      children
-    else
-      redis_url = Application.fetch_env!(:telegram_broadcaster, :redis_url)
-      child = Supervisor.child_spec({Redix, redis_url}, id: :redix)
-      children ++ [child]
-    end
+    # if Mix.env() == :test do
+    #   # In test mode, use TestRedis (Agent-based mock)
+    #   children
+    # else
+    #   redis_url = Application.fetch_env!(:telegram_broadcaster, :redis_url)
+    #   child = Supervisor.child_spec({Redix, redis_url}, id: :redix)
+    #   children ++ [child]
+    # end
+    redis_url = Application.fetch_env!(:telegram_broadcaster, :redis_url)
+    child = %{
+      id: :redix,
+      start: {Redix, :start_link, [redis_url, [name: TelegramBroadcaster.Redis]]}
+    }
+    children ++ [child]
   end
 
   defp maybe_add_subscriber(children) do

@@ -30,7 +30,8 @@ defmodule TelegramBroadcaster.MixProject do
       {:redix, "~> 1.2"},
       {:jason, "~> 1.4"},
       {:finch, "~> 0.18"},
-      {:plug_cowboy, "~> 2.7"}
+      {:plug_cowboy, "~> 2.7"},
+      {:castore, "~> 1.0"}
     ]
   end
 end

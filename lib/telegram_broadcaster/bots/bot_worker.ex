@@ -72,6 +72,7 @@ defmodule TelegramBroadcaster.BotWorker do
         existing ->
           updated = %{
             existing
+
             | insert_queue: existing.insert_queue ++ to_insert,
               delete_queue: existing.delete_queue ++ to_delete
           }
@@ -79,15 +80,8 @@ defmodule TelegramBroadcaster.BotWorker do
           Map.put(state.tracked, tracking_id, updated)
       end
 
-    # Clean up empty tracking entries
-    new_tracked =
-      case Map.get(new_tracked, tracking_id) do
-        %{insert_queue: [], delete_queue: [], in_flight: 0} ->
-          Map.delete(new_tracked, tracking_id)
-
-        _ ->
-          new_tracked
-      end
+    # Исправлено: используем единую функцию очистки вместо дублирования
+    new_tracked = clean_empty_tracking(new_tracked, tracking_id)
 
     {:noreply, %{state | tracked: new_tracked}}
   end
@@ -107,16 +101,62 @@ defmodule TelegramBroadcaster.BotWorker do
           state.tracked
 
         _ ->
+          # Исправлено: сохраняем текущий in_flight, если запись уже существовала
           existing = Map.get(state.tracked, tracking_id, empty_entry())
 
           updated = %{
             existing
+
             | insert_queue: existing.insert_queue ++ to_insert,
               delete_queue: existing.delete_queue ++ to_delete
           }
 
           Map.put(state.tracked, tracking_id, updated)
       end
+
+    {:noreply, %{state | tracked: new_tracked}}
+  end
+
+  @impl true
+  def handle_info({:send_result, tracking_id, chat_id, version, result}, state) do
+    bot_id = state.bot_id
+
+    case result do
+      {:ok, message_id} ->
+        DeliveredStore.save(bot_id, tracking_id, chat_id, message_id, version)
+
+      {:error, reason} ->
+        IO.inspect(reason, label: "Telegram send_message failed")
+    end
+
+    new_tracked =
+      update_tracked_in_state(state.tracked, tracking_id, fn entry ->
+        %{entry | in_flight: max(0, entry.in_flight - 1)}
+      end)
+
+      |> clean_empty_tracking(tracking_id)
+
+    {:noreply, %{state | tracked: new_tracked}}
+  end
+
+  @impl true
+  def handle_info({:delete_result, tracking_id, chat_id, result}, state) do
+    bot_id = state.bot_id
+
+    case result do
+      :ok ->
+        DeliveredStore.remove(bot_id, tracking_id, chat_id)
+
+      {:error, reason} ->
+        IO.inspect(reason, label: "Telegram delete_message failed")
+    end
+
+    new_tracked =
+      update_tracked_in_state(state.tracked, tracking_id, fn entry ->
+        %{entry | in_flight: max(0, entry.in_flight - 1)}
+      end)
+
+      |> clean_empty_tracking(tracking_id)
 
     {:noreply, %{state | tracked: new_tracked}}
   end
@@ -131,8 +171,8 @@ defmodule TelegramBroadcaster.BotWorker do
         {:delete, tracking_id, {chat_id, msg_id}} ->
           execute_delete(state, tracking_id, chat_id, msg_id)
 
-        {:send, tracking_id, {chat_id, text, markup}} ->
-          execute_send(state, tracking_id, chat_id, text, markup)
+        {:send, tracking_id, {chat_id, payload}} ->
+          execute_send(state, tracking_id, chat_id, payload)
       end
 
     Process.send_after(self(), :tick, state.tick_interval_ms)
@@ -147,6 +187,8 @@ defmodule TelegramBroadcaster.BotWorker do
   # Private
 
   defp execute_delete(state, tracking_id, chat_id, msg_id) do
+    parent = self()
+
     Task.start(fn ->
       result =
         TelegramBroadcaster.TelegramClient.delete_message(
@@ -155,7 +197,7 @@ defmodule TelegramBroadcaster.BotWorker do
           msg_id
         )
 
-      send(self(), {:delete_result, tracking_id, chat_id, result})
+      send(parent, {:delete_result, tracking_id, chat_id, result})
     end)
 
     update_tracked(state, tracking_id, fn entry ->
@@ -163,7 +205,13 @@ defmodule TelegramBroadcaster.BotWorker do
     end)
   end
 
-  defp execute_send(state, tracking_id, chat_id, text, markup) do
+  defp execute_send(state, tracking_id, chat_id, payload) do
+    parent = self()
+
+    text = Map.get(payload, "text", "")
+    version = Map.get(payload, "version", 0)
+    markup = Map.get(payload, "reply_markup")
+
     Task.start(fn ->
       result =
         TelegramBroadcaster.TelegramClient.send_message(
@@ -173,7 +221,7 @@ defmodule TelegramBroadcaster.BotWorker do
           markup
         )
 
-      send(self(), {:send_result, tracking_id, chat_id, result})
+      send(parent, {:send_result, tracking_id, chat_id, version, result})
     end)
 
     update_tracked(state, tracking_id, fn entry ->
@@ -182,7 +230,23 @@ defmodule TelegramBroadcaster.BotWorker do
   end
 
   defp update_tracked(state, tracking_id, fun) do
-    %{state | tracked: Map.update!(state.tracked, tracking_id, fun)}
+    %{state | tracked: update_tracked_in_state(state.tracked, tracking_id, fun)}
+  end
+
+  # Добавлен недостающий хелпер модификации стейта
+  defp update_tracked_in_state(tracked, tracking_id, fun) do
+    Map.update!(tracked, tracking_id, fun)
+  end
+
+  # Добавлен недостающий хелпер очистки очередей
+  defp clean_empty_tracking(tracked, tracking_id) do
+    case Map.get(tracked, tracking_id) do
+      %{insert_queue: [], delete_queue: [], in_flight: 0} ->
+        Map.delete(tracked, tracking_id)
+
+      _ ->
+        tracked
+    end
   end
 
   defp via_tuple(bot_id) do
