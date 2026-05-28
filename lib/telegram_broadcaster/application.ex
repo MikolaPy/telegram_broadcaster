@@ -6,7 +6,8 @@ defmodule TelegramBroadcaster.Application do
     children =
       [
         {Finch, name: TelegramBroadcaster.Finch},
-        {Registry, keys: :unique, name: TelegramBroadcaster.BotRegistry}
+        {Registry, keys: :unique, name: TelegramBroadcaster.BotRegistry},
+        TelegramBroadcaster.Repo
       ]
       |> maybe_add_redis()
       |> maybe_add_subscriber()
@@ -36,7 +37,24 @@ defmodule TelegramBroadcaster.Application do
     if Mix.env() == :test do
       children
     else
-      children ++ [TelegramBroadcaster.BotSupervisor, TelegramBroadcaster.Subscriber]
+      children ++
+        [
+          TelegramBroadcaster.BotSupervisor,
+          TelegramBroadcaster.Subscriber,
+          {Task, fn -> autoload_bots() end}
+        ]
     end
+  end
+
+  defp autoload_bots do
+    import Ecto.Query
+
+    TelegramBroadcaster.Repo.all(
+      from b in TelegramBroadcaster.BotMain,
+        select: %{bot_id: b.bot_id, bot_token: b.bot_token}
+    )
+    |> Enum.each(fn %{bot_id: bot_id, bot_token: bot_token} ->
+      TelegramBroadcaster.BotSupervisor.start_bot(bot_id, bot_token)
+    end)
   end
 end
