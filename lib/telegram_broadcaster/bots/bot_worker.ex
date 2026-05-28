@@ -66,8 +66,7 @@ defmodule TelegramBroadcaster.BotWorker do
           else
             Map.put(state.tracked, tracking_id, %{
               insert_queue: to_insert,
-              delete_queue: to_delete,
-              in_flight: 0
+              delete_queue: to_delete
             })
           end
 
@@ -123,18 +122,23 @@ defmodule TelegramBroadcaster.BotWorker do
   def handle_info({:send_result, tracking_id, chat_id, version, result}, state) do
     bot_id = state.bot_id
 
-    case result do
-      {:ok, message_id} ->
-        DeliveredStore.save(bot_id, tracking_id, chat_id, message_id, version)
-
-      {:error, reason} ->
-        IO.inspect(reason, label: "Telegram send_message failed")
-    end
-
     new_tracked =
-      update_tracked_in_state(state.tracked, tracking_id, fn entry ->
-        %{entry | in_flight: max(0, entry.in_flight - 1)}
-      end)
+      case result do
+        {:ok, message_id} ->
+          DeliveredStore.save(bot_id, tracking_id, chat_id, message_id, version)
+
+          current = DispatchStore.fetch_field(bot_id, tracking_id, chat_id)
+
+          if current == nil or current["version"] != version do
+            queue_delete(state.tracked, tracking_id, chat_id, message_id)
+          else
+            state.tracked
+          end
+
+        {:error, reason} ->
+          IO.inspect(reason, label: "Telegram send_message failed")
+          state.tracked
+      end
 
       |> clean_empty_tracking(tracking_id)
 
@@ -154,10 +158,7 @@ defmodule TelegramBroadcaster.BotWorker do
     end
 
     new_tracked =
-      update_tracked_in_state(state.tracked, tracking_id, fn entry ->
-        %{entry | in_flight: max(0, entry.in_flight - 1)}
-      end)
-
+      state.tracked
       |> clean_empty_tracking(tracking_id)
 
     {:noreply, %{state | tracked: new_tracked}}
@@ -203,7 +204,7 @@ defmodule TelegramBroadcaster.BotWorker do
     end)
 
     update_tracked(state, tracking_id, fn entry ->
-      %{entry | delete_queue: tl(entry.delete_queue), in_flight: entry.in_flight + 1}
+      %{entry | delete_queue: tl(entry.delete_queue)}
     end)
   end
 
@@ -227,7 +228,13 @@ defmodule TelegramBroadcaster.BotWorker do
     end)
 
     update_tracked(state, tracking_id, fn entry ->
-      %{entry | insert_queue: tl(entry.insert_queue), in_flight: entry.in_flight + 1}
+      %{entry | insert_queue: tl(entry.insert_queue)}
+    end)
+  end
+
+  defp queue_delete(tracked, tracking_id, chat_id, msg_id) do
+    Map.update(tracked, tracking_id, %{insert_queue: [], delete_queue: [{chat_id, msg_id}]}, fn entry ->
+      %{entry | delete_queue: entry.delete_queue ++ [{chat_id, msg_id}]}
     end)
   end
 
@@ -243,7 +250,7 @@ defmodule TelegramBroadcaster.BotWorker do
   # Добавлен недостающий хелпер очистки очередей
   defp clean_empty_tracking(tracked, tracking_id) do
     case Map.get(tracked, tracking_id) do
-      %{insert_queue: [], delete_queue: [], in_flight: 0} ->
+      %{insert_queue: [], delete_queue: []} ->
         Map.delete(tracked, tracking_id)
 
       _ ->
@@ -256,7 +263,7 @@ defmodule TelegramBroadcaster.BotWorker do
   end
 
   defp empty_entry do
-    %{insert_queue: [], delete_queue: [], in_flight: 0}
+    %{insert_queue: [], delete_queue: []}
   end
 
   defp compute_driver_diff(chat_id, desired, delivered) do
