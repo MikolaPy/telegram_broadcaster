@@ -58,31 +58,24 @@ defmodule TelegramBroadcaster.BotWorker do
     delivered = DeliveredStore.fetch(bot_id, tracking_id)
     {to_insert, to_delete} = DiffEngine.compute(desired, delivered)
 
+    delete_actions = Enum.map(to_delete, fn {chat_id, msg_id} -> {:delete, chat_id, msg_id} end)
+    insert_actions = Enum.map(to_insert, fn {chat_id, payload} -> {:send, chat_id, payload} end)
+    actions = delete_actions ++ insert_actions
+
     new_tracked =
-      case Map.get(state.tracked, tracking_id) do
-        nil ->
-          if to_insert == [] and to_delete == [] do
-            state.tracked
-          else
-            Map.put(state.tracked, tracking_id, %{
-              insert_queue: to_insert,
-              delete_queue: to_delete
-            })
-          end
+      case {Map.get(state.tracked, tracking_id), actions} do
+        {nil, []} ->
+          state.tracked
 
-        existing ->
-          updated = %{
-            existing
+        {nil, _} ->
+          Map.put(state.tracked, tracking_id, %{actions: actions})
 
-            | insert_queue: to_insert,
-              delete_queue: to_delete
-          }
+        {_, []} ->
+          Map.delete(state.tracked, tracking_id)
 
-          Map.put(state.tracked, tracking_id, updated)
+        {_, _} ->
+          Map.put(state.tracked, tracking_id, %{actions: actions})
       end
-
-    # Исправлено: используем единую функцию очистки вместо дублирования
-    new_tracked = clean_empty_tracking(new_tracked, tracking_id)
 
     {:noreply, %{state | tracked: new_tracked}}
   end
@@ -96,25 +89,24 @@ defmodule TelegramBroadcaster.BotWorker do
 
     {to_insert, to_delete} = compute_driver_diff(chat_id, desired, delivered)
 
+    delete_actions = Enum.map(to_delete, fn {cid, msg_id} -> {:delete, cid, msg_id} end)
+    insert_actions = Enum.map(to_insert, fn {cid, payload} -> {:send, cid, payload} end)
+    new_actions = delete_actions ++ insert_actions
+
     new_tracked =
-      case {to_insert, to_delete} do
-        {[], []} ->
+      case new_actions do
+        [] ->
           state.tracked
 
         _ ->
           existing = Map.get(state.tracked, tracking_id, empty_entry())
 
-          # Убираем старые записи для этого chat_id из очередей
-          filtered_insert = Enum.reject(existing.insert_queue, fn {cid, _} -> cid == chat_id end)
-          filtered_delete = Enum.reject(existing.delete_queue, fn {cid, _} -> cid == chat_id end)
+          filtered =
+            Enum.reject(existing.actions, fn
+              {_, cid, _} -> cid == chat_id
+            end)
 
-          updated = %{
-            existing
-            | insert_queue: to_insert ++ filtered_insert,
-              delete_queue: to_delete ++ filtered_delete
-          }
-
-          Map.put(state.tracked, tracking_id, updated)
+          Map.put(state.tracked, tracking_id, %{actions: new_actions ++ filtered})
       end
 
     {:noreply, %{state | tracked: new_tracked}}
@@ -191,8 +183,12 @@ defmodule TelegramBroadcaster.BotWorker do
 
   # Private
 
-  defp execute_delete(state, tracking_id, chat_id, msg_id) do
+  defp execute_delete(state, tracking_id, _chat_id, _msg_id) do
     parent = self()
+
+    # Берём данные из первого action (уже проверено Scheduler'ом)
+    [{:delete, chat_id, msg_id} | rest] =
+      Map.get(state.tracked, tracking_id, %{actions: []}).actions
 
     Task.start(fn ->
       result =
@@ -206,12 +202,15 @@ defmodule TelegramBroadcaster.BotWorker do
     end)
 
     update_tracked(state, tracking_id, fn entry ->
-      %{entry | delete_queue: tl(entry.delete_queue)}
+      %{entry | actions: rest}
     end)
   end
 
-  defp execute_send(state, tracking_id, chat_id, payload) do
+  defp execute_send(state, tracking_id, _chat_id, _payload) do
     parent = self()
+
+    [{:send, chat_id, payload} | rest] =
+      Map.get(state.tracked, tracking_id, %{actions: []}).actions
 
     text = Map.get(payload, "text", "")
     version = Map.get(payload, "version", 0)
@@ -230,13 +229,13 @@ defmodule TelegramBroadcaster.BotWorker do
     end)
 
     update_tracked(state, tracking_id, fn entry ->
-      %{entry | insert_queue: tl(entry.insert_queue)}
+      %{entry | actions: rest}
     end)
   end
 
   defp queue_delete(tracked, tracking_id, chat_id, msg_id) do
-    Map.update(tracked, tracking_id, %{insert_queue: [], delete_queue: [{chat_id, msg_id}]}, fn entry ->
-      %{entry | delete_queue: entry.delete_queue ++ [{chat_id, msg_id}]}
+    Map.update(tracked, tracking_id, %{actions: [{:delete, chat_id, msg_id}]}, fn entry ->
+      %{entry | actions: entry.actions ++ [{:delete, chat_id, msg_id}]}
     end)
   end
 
@@ -252,11 +251,8 @@ defmodule TelegramBroadcaster.BotWorker do
   # Добавлен недостающий хелпер очистки очередей
   defp clean_empty_tracking(tracked, tracking_id) do
     case Map.get(tracked, tracking_id) do
-      %{insert_queue: [], delete_queue: []} ->
-        Map.delete(tracked, tracking_id)
-
-      _ ->
-        tracked
+      %{actions: []} -> Map.delete(tracked, tracking_id)
+      _ -> tracked
     end
   end
 
@@ -265,7 +261,7 @@ defmodule TelegramBroadcaster.BotWorker do
   end
 
   defp empty_entry do
-    %{insert_queue: [], delete_queue: []}
+    %{actions: []}
   end
 
   defp compute_driver_diff(chat_id, desired, delivered) do

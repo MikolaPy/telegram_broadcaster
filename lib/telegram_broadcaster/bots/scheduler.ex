@@ -6,33 +6,16 @@ defmodule TelegramBroadcaster.Scheduler do
   def next_action(tracked) when map_size(tracked) == 0, do: :empty
 
   def next_action(tracked) do
-    # Priority: delete > insert across all tracking_ids
-    case find_delete(tracked) do
-      nil ->
-        case find_insert(tracked) do
-          nil -> :empty
-          result -> result
-        end
+    Enum.find_value(tracked, fn {tracking_id, %{actions: actions}} ->
+      case actions do
+        [action | _] ->
+          case action do
+            {:delete, chat_id, msg_id} -> {:delete, tracking_id, {chat_id, msg_id}}
+            {:send, chat_id, payload} -> {:send, tracking_id, {chat_id, payload}}
+          end
 
-      result ->
-        result
-    end
-  end
-
-  defp find_delete(tracked) do
-    Enum.find_value(tracked, fn {tracking_id, state} ->
-      case state.delete_queue do
-        [item | _] -> {:delete, tracking_id, item}
-        [] -> nil
-      end
-    end)
-  end
-
-  defp find_insert(tracked) do
-    Enum.find_value(tracked, fn {tracking_id, state} ->
-      case state.insert_queue do
-        [item | _] -> {:send, tracking_id, item}
-        [] -> nil
+        [] ->
+          nil
       end
     end)
   end
