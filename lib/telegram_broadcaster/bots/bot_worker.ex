@@ -102,14 +102,16 @@ defmodule TelegramBroadcaster.BotWorker do
           state.tracked
 
         _ ->
-          # Исправлено: сохраняем текущий in_flight, если запись уже существовала
           existing = Map.get(state.tracked, tracking_id, empty_entry())
+
+          # Убираем старые записи для этого chat_id из очередей
+          filtered_insert = Enum.reject(existing.insert_queue, fn {cid, _} -> cid == chat_id end)
+          filtered_delete = Enum.reject(existing.delete_queue, fn {cid, _} -> cid == chat_id end)
 
           updated = %{
             existing
-
-            | insert_queue: existing.insert_queue ++ to_insert,
-              delete_queue: existing.delete_queue ++ to_delete
+            | insert_queue: to_insert ++ filtered_insert,
+              delete_queue: to_delete ++ filtered_delete
           }
 
           Map.put(state.tracked, tracking_id, updated)
