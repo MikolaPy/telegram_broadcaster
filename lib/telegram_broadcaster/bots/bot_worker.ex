@@ -75,8 +75,8 @@ defmodule TelegramBroadcaster.BotWorker do
           updated = %{
             existing
 
-            | insert_queue: existing.insert_queue ++ to_insert,
-              delete_queue: existing.delete_queue ++ to_delete
+            | insert_queue: to_insert,
+              delete_queue: to_delete
           }
 
           Map.put(state.tracked, tracking_id, updated)
