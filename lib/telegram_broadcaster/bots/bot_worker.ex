@@ -4,6 +4,7 @@ defmodule TelegramBroadcaster.BotWorker do
   alias TelegramBroadcaster.{DiffEngine, Scheduler, DispatchStore, DeliveredStore}
 
   @default_tick_interval_ms 33
+  @telegram_client Application.compile_env(:telegram_broadcaster, :telegram_client, TelegramBroadcaster.TelegramClient)
 
   # Client API
 
@@ -36,6 +37,7 @@ defmodule TelegramBroadcaster.BotWorker do
       bot_id: bot_id,
       bot_token: bot_token,
       tick_interval_ms: tick_interval,
+      telegram_client: @telegram_client,
       tracked: %{}
     }
 
@@ -191,7 +193,7 @@ defmodule TelegramBroadcaster.BotWorker do
 
     Task.start(fn ->
       result =
-        TelegramBroadcaster.TelegramClient.delete_message(
+        state.telegram_client.delete_message(
           state.bot_token,
           chat_id,
           msg_id
@@ -214,7 +216,7 @@ defmodule TelegramBroadcaster.BotWorker do
 
     Task.start(fn ->
       result =
-        TelegramBroadcaster.TelegramClient.send_message(
+        state.telegram_client.send_message(
           state.bot_token,
           chat_id,
           text,
