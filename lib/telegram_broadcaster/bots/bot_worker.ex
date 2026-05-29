@@ -1,7 +1,7 @@
 defmodule TelegramBroadcaster.BotWorker do
   use GenServer
 
-  alias TelegramBroadcaster.{DiffEngine, Scheduler, DispatchStore, DeliveredStore}
+  alias TelegramBroadcaster.{DiffEngine, Scheduler, DispatchStore, DeliveredStore, FailedStore}
 
   @default_tick_interval_ms 33
   @telegram_client Application.compile_env(:telegram_broadcaster, :telegram_client, TelegramBroadcaster.TelegramClient)
@@ -130,7 +130,7 @@ defmodule TelegramBroadcaster.BotWorker do
           end
 
         {:error, reason} ->
-          IO.inspect(reason, label: "Telegram send_message failed")
+          FailedStore.save(bot_id, tracking_id, chat_id, "send", reason)
           state.tracked
       end
 
@@ -148,7 +148,7 @@ defmodule TelegramBroadcaster.BotWorker do
         DeliveredStore.remove(bot_id, tracking_id, chat_id)
 
       {:error, reason} ->
-        IO.inspect(reason, label: "Telegram delete_message failed")
+        FailedStore.save(bot_id, tracking_id, chat_id, "delete", reason)
     end
 
     new_tracked =
