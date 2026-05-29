@@ -164,30 +164,6 @@ Elixir:
 ### `trigger_sync_driver` — точечная синхронизация
 Считывает только одно поле (chat_id) из dispatch и delivered. Используется для обновления одного водителя без перечитывания всех. Заменяет действия для этого chat_id в существующей очереди.
 
-## Структура проекта
-
-```
-lib/telegram_broadcaster/
-├── application.ex              # Supervisor: запуск всех компонентов
-├── repo.ex                     # Ecto Repo (MySQL)
-├── bot_main.ex                 # Схема: bot_id, bot_name, bot_token
-├── delivery/
-│   ├── dispatch_store.ex       # Redis: чтение dispatch
-│   ├── delivered_store.ex      # Redis: запись/чтение delivered
-│   ├── failed_store.ex         # Redis: запись ошибок
-│   ├── telegram_client.ex      # HTTP: Telegram Bot API
-│   └── diff_engine.ex          # Diff: desired vs delivered
-├── sync/
-│   ├── subscriber.ex           # Redis Pub/Sub listener
-│   └── dispatcher.ex           # Маршрутизация сигналов
-├── bots/
-│   ├── bot_supervisor.ex       # DynamicSupervisor
-│   ├── bot_worker.ex           # GenServer: обработка и очередь
-│   └── scheduler.ex            # FIFO выборка действия
-└── telegram_broadcaster_web/
-    └── endpoint.ex             # Plug: health check
-```
-
 ## Запуск
 
 ### Docker
@@ -218,19 +194,6 @@ mix phx.server
 | Параметр | Значение | Описание |
 |---------|---------|----------|
 | `tick_interval_ms` | 33 | Интервал обработки действий (rate limit ~30 msg/sec) |
-
-## Зависимости
-
-| Пакет | Версия | Назначение |
-|-------|--------|-----------|
-| Phoenix | ~> 1.7 | Web framework |
-| Ecto SQL | ~> 3.10 | ORM |
-| MyXQL | ~> 0.6 | MySQL драйвер |
-| Redix | ~> 1.2 | Redis клиент |
-| Jason | ~> 1.4 | JSON |
-| Finch | ~> 0.18 | HTTP клиент |
-| Plug Cowboy | ~> 2.7 | Web server |
-| CAStore | ~> 1.0 | SSL сертификаты |
 
 ## MySQL (bot_main)
 
